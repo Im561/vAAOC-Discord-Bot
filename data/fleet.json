@@ -1,0 +1,26 @@
+[
+  {
+    "type": "F-16C",
+    "category": "Fighter",
+    "tail": "AAOC-0001",
+    "home_base": "KMCF",
+    "current_location": "KMCF",
+    "status": "Available"
+  },
+  {
+    "type": "T-38C",
+    "category": "Trainer",
+    "tail": "AAOC-0002",
+    "home_base": "KMCF",
+    "current_location": "KMCF",
+    "status": "Available"
+  },
+  {
+    "type": "HH-60W",
+    "category": "Helicopter",
+    "tail": "AAOC-0003",
+    "home_base": "KHST",
+    "current_location": "KHST",
+    "status": "Available"
+  }
+]
