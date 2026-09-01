@@ -5,7 +5,7 @@ import {
 } from "discord.js";
 import { links, callsigns } from "./config.js";
 import { getFleet, getAirport, matchesAircraftType } from "./phpvms.js";
-import { getMusicPlayer } from "./music.js";
+import { ensureMusicPlayer, getMusicPlayer } from "./music.js";
 
 function normalize(value) {
   return String(value || "").trim().toUpperCase();
@@ -67,6 +67,14 @@ function getGuildQueue(interaction) {
 
 function safeTrackTitle(track) {
   return String(track?.title || track?.raw?.title || "Unknown track").slice(0, 180);
+}
+
+function withTimeout(promise, ms, label) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out after ${Math.round(ms / 1000)} seconds.`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
 export const commandData = [
@@ -295,60 +303,75 @@ export async function handleCommand(interaction) {
       return interaction.reply({ content: "Music commands only work inside the AAOC server.", ephemeral: true });
     }
 
-    const voiceChannel = getUserVoiceChannel(interaction);
-    if (!voiceChannel) {
-      return interaction.reply({
-        content: "Join a voice channel first, then run `/play`.",
-        ephemeral: true
-      });
-    }
-
-    const botMember = interaction.guild.members.me;
-    const permissions = botMember ? voiceChannel.permissionsFor(botMember) : null;
-    if (!permissions?.has(PermissionsBitField.Flags.Connect) || !permissions?.has(PermissionsBitField.Flags.Speak)) {
-      return interaction.reply({
-        content: `I need **Connect** and **Speak** permission in **${voiceChannel.name}**.`,
-        ephemeral: true
-      });
-    }
-
-    const query = interaction.options.getString("query", true).trim();
+    // Acknowledge Discord immediately before any voice lookup, extractor load,
+    // YouTube request, or FFmpeg work. This prevents "application did not respond".
     await interaction.deferReply();
 
     try {
-      const player = getMusicPlayer();
-      const existingQueue = player.nodes.get(interaction.guildId);
+      const voiceChannel = getUserVoiceChannel(interaction);
+      if (!voiceChannel) {
+        return interaction.editReply("Join a voice channel first, then run `/play`.");
+      }
 
+      const botMember = interaction.guild.members.me;
+      const permissions = botMember ? voiceChannel.permissionsFor(botMember) : null;
+      const canView = permissions?.has(PermissionsBitField.Flags.ViewChannel);
+      const canConnect = permissions?.has(PermissionsBitField.Flags.Connect);
+      const canSpeak = permissions?.has(PermissionsBitField.Flags.Speak);
+
+      if (!canView || !canConnect || !canSpeak) {
+        return interaction.editReply(
+          `I need **View Channel**, **Connect**, and **Speak** permission in **${voiceChannel.name}**.`
+        );
+      }
+
+      const query = interaction.options.getString("query", true).trim();
+      if (!query) {
+        return interaction.editReply("Give me a YouTube URL or song name to play.");
+      }
+
+      const player = await withTimeout(
+        ensureMusicPlayer(interaction.client),
+        25000,
+        "Music system initialization"
+      );
+
+      const existingQueue = player.nodes.get(interaction.guildId);
       if (existingQueue?.channel && existingQueue.channel.id !== voiceChannel.id) {
         return interaction.editReply(
           `I am already playing in **${existingQueue.channel.name}**. Join that channel to control the player.`
         );
       }
 
-      const { track } = await player.play(voiceChannel, query, {
-        nodeOptions: {
-          metadata: {
-            textChannelId: interaction.channelId,
-            requestedBy: interaction.user.id
-          },
-          bufferingTimeout: 20000,
-          leaveOnStop: true,
-          leaveOnStopCooldown: 10000,
-          leaveOnEnd: true,
-          leaveOnEndCooldown: 300000,
-          leaveOnEmpty: true,
-          leaveOnEmptyCooldown: 300000,
-          skipOnNoStream: true,
-          selfDeaf: true
-        }
-      });
+      const result = await withTimeout(
+        player.play(voiceChannel, query, {
+          nodeOptions: {
+            metadata: {
+              textChannelId: interaction.channelId,
+              requestedBy: interaction.user.id
+            },
+            bufferingTimeout: 20000,
+            leaveOnStop: true,
+            leaveOnStopCooldown: 10000,
+            leaveOnEnd: true,
+            leaveOnEndCooldown: 300000,
+            leaveOnEmpty: true,
+            leaveOnEmptyCooldown: 300000,
+            skipOnNoStream: true,
+            selfDeaf: true
+          }
+        }),
+        45000,
+        "YouTube/audio playback request"
+      );
 
-      return interaction.editReply(`Queued **${safeTrackTitle(track)}** in **${voiceChannel.name}**.`);
+      return interaction.editReply(
+        `Queued **${safeTrackTitle(result?.track)}** in **${voiceChannel.name}**.`
+      );
     } catch (error) {
       console.error("Music /play error:", error);
-      return interaction.editReply(
-        `Could not play that audio: ${String(error?.message || error).slice(0, 1600)}`
-      );
+      const message = String(error?.message || error || "Unknown playback error");
+      return interaction.editReply(`Could not play that audio: ${message.slice(0, 1600)}`);
     }
   }
 
