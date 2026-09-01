@@ -8,7 +8,7 @@ import {
   EmbedBuilder
 } from "discord.js";
 import { commandData, handleCommand } from "./commands.js";
-import { initializeMusic } from "./music.js";
+import { initializeMusic, getMusicStatus } from "./music.js";
 
 function env(name) {
   return String(process.env[name] || "").trim();
@@ -78,17 +78,8 @@ client.once("ready", async () => {
 
   client.user.setActivity("AAOC Fleet & Music");
 
-  try {
-    await initializeMusic(client);
-    musicReady = true;
-    musicError = null;
-    console.log("SUCCESS: AAOC voice/music system ready.");
-  } catch (error) {
-    musicReady = false;
-    musicError = error?.message || String(error);
-    console.error("FAILED TO INITIALIZE MUSIC PLAYER:", error);
-  }
-
+  // Register slash commands first. Music initialization is deliberately not
+  // allowed to delay or prevent Discord command availability.
   try {
     await registerCommands();
   } catch (error) {
@@ -98,6 +89,20 @@ client.once("ready", async () => {
     console.error(error);
     console.error("Check DISCORD_GUILD_ID, the bot's server membership, and Discord application installation permissions.");
   }
+
+  // Initialize music separately. /play can also initialize lazily if this
+  // startup attempt is still running or failed.
+  void initializeMusic(client)
+    .then(() => {
+      musicReady = true;
+      musicError = null;
+      console.log("SUCCESS: AAOC voice/music system ready.");
+    })
+    .catch(error => {
+      musicReady = false;
+      musicError = error?.message || String(error);
+      console.error("FAILED TO INITIALIZE MUSIC PLAYER:", error);
+    });
 });
 
 client.on("interactionCreate", async interaction => {
@@ -123,6 +128,10 @@ client.on("error", error => {
   console.error("Discord client error:", error);
 });
 
+process.on("unhandledRejection", error => {
+  console.error("Unhandled promise rejection:", error);
+});
+
 const app = express();
 app.use(express.json({ limit: "1mb" }));
 
@@ -132,14 +141,17 @@ app.get("/", (_req, res) => {
 
 app.get("/health", (_req, res) => {
   const discordReady = client.isReady();
+  const musicStatus = getMusicStatus();
 
   res.status(discordReady ? 200 : 503).json({
     ok: discordReady,
     discordReady,
     commandsRegistered: commandRegistrationOk,
     commandRegistrationError,
-    musicReady,
+    musicReady: musicReady || musicStatus.initialized,
     musicError,
+    youtubeReady: musicStatus.youtubeReady,
+    youtubeError: musicStatus.youtubeError,
     botUser: client.user?.tag || null,
     botApplicationId: client.application?.id || client.user?.id || null,
     targetGuildId: DISCORD_GUILD_ID,
