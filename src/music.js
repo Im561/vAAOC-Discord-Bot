@@ -1,4 +1,3 @@
-import ffmpegPath from "ffmpeg-static";
 import { Player } from "discord-player";
 import { DefaultExtractors } from "@discord-player/extractor";
 
@@ -22,10 +21,6 @@ export async function initializeMusic(client) {
   if (initPromise) return initPromise;
 
   initPromise = (async () => {
-    if (ffmpegPath && !process.env.FFMPEG_PATH) {
-      process.env.FFMPEG_PATH = ffmpegPath;
-    }
-
     const nextPlayer = new Player(client);
 
     await withTimeout(
