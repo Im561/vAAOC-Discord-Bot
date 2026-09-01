@@ -1,9 +1,11 @@
 import {
   SlashCommandBuilder,
-  EmbedBuilder
+  EmbedBuilder,
+  PermissionsBitField
 } from "discord.js";
 import { links, callsigns } from "./config.js";
 import { getFleet, getAirport, matchesAircraftType } from "./phpvms.js";
+import { getMusicPlayer } from "./music.js";
 
 function normalize(value) {
   return String(value || "").trim().toUpperCase();
@@ -52,6 +54,29 @@ async function replyApiError(interaction, error) {
     return interaction.editReply({ content, embeds: [] });
   }
   return interaction.reply({ content, ephemeral: true });
+}
+
+function getUserVoiceChannel(interaction) {
+  return interaction.guild?.voiceStates?.cache?.get(interaction.user.id)?.channel || null;
+}
+
+function getGuildQueue(interaction) {
+  if (!interaction.guildId) return null;
+  return getMusicPlayer().nodes.get(interaction.guildId);
+}
+
+function isYouTubeUrl(value) {
+  try {
+    const url = new URL(value);
+    const host = url.hostname.toLowerCase().replace(/^www\./, "");
+    return host === "youtube.com" || host.endsWith(".youtube.com") || host === "youtu.be";
+  } catch {
+    return false;
+  }
+}
+
+function safeTrackTitle(track) {
+  return String(track?.title || track?.raw?.title || "Unknown track").slice(0, 180);
 }
 
 export const commandData = [
@@ -106,6 +131,40 @@ export const commandData = [
         .setDescription("Aircraft type, e.g. F-16C, HH-60W, C-17A")
         .setRequired(true)
     ),
+
+  new SlashCommandBuilder()
+    .setName("play")
+    .setDescription("Join your voice channel and play or queue audio.")
+    .addStringOption(option =>
+      option
+        .setName("query")
+        .setDescription("Song search, SoundCloud link, or direct audio URL")
+        .setRequired(true)
+    ),
+
+  new SlashCommandBuilder()
+    .setName("pause")
+    .setDescription("Pause the current AAOC music track."),
+
+  new SlashCommandBuilder()
+    .setName("resume")
+    .setDescription("Resume the current AAOC music track."),
+
+  new SlashCommandBuilder()
+    .setName("skip")
+    .setDescription("Skip the current AAOC music track."),
+
+  new SlashCommandBuilder()
+    .setName("stop")
+    .setDescription("Stop playback and clear the AAOC music queue."),
+
+  new SlashCommandBuilder()
+    .setName("queue")
+    .setDescription("Show the current AAOC music queue."),
+
+  new SlashCommandBuilder()
+    .setName("leave")
+    .setDescription("Disconnect the AAOC bot from voice."),
 
   new SlashCommandBuilder()
     .setName("flightnotify")
@@ -238,6 +297,173 @@ export async function handleCommand(interaction) {
       return interaction.editReply({ embeds, content: "" });
     } catch (error) {
       return replyApiError(interaction, error);
+    }
+  }
+
+  if (interaction.commandName === "play") {
+    if (!interaction.guild) {
+      return interaction.reply({ content: "Music commands only work inside the AAOC server.", ephemeral: true });
+    }
+
+    const voiceChannel = getUserVoiceChannel(interaction);
+    if (!voiceChannel) {
+      return interaction.reply({
+        content: "Join a voice channel first, then run `/play`.",
+        ephemeral: true
+      });
+    }
+
+    const botMember = interaction.guild.members.me;
+    const permissions = botMember ? voiceChannel.permissionsFor(botMember) : null;
+    if (!permissions?.has(PermissionsBitField.Flags.Connect) || !permissions?.has(PermissionsBitField.Flags.Speak)) {
+      return interaction.reply({
+        content: `I need **Connect** and **Speak** permission in **${voiceChannel.name}**.`,
+        ephemeral: true
+      });
+    }
+
+    const query = interaction.options.getString("query", true).trim();
+    if (isYouTubeUrl(query)) {
+      return interaction.reply({
+        content: "YouTube audio playback is not enabled. Use a SoundCloud link/search or a direct audio URL instead.",
+        ephemeral: true
+      });
+    }
+
+    await interaction.deferReply();
+
+    try {
+      const player = getMusicPlayer();
+      const existingQueue = player.nodes.get(interaction.guildId);
+
+      if (existingQueue?.channel && existingQueue.channel.id !== voiceChannel.id) {
+        return interaction.editReply(
+          `I am already playing in **${existingQueue.channel.name}**. Join that channel to control the player.`
+        );
+      }
+
+      const isUrl = /^https?:\/\//i.test(query);
+      const playableQuery = isUrl ? query : `scsearch:${query}`;
+
+      const { track } = await player.play(voiceChannel, playableQuery, {
+        nodeOptions: {
+          metadata: {
+            textChannelId: interaction.channelId,
+            requestedBy: interaction.user.id
+          },
+          bufferingTimeout: 15000,
+          leaveOnStop: true,
+          leaveOnStopCooldown: 10000,
+          leaveOnEnd: true,
+          leaveOnEndCooldown: 300000,
+          leaveOnEmpty: true,
+          leaveOnEmptyCooldown: 300000,
+          skipOnNoStream: true,
+          selfDeaf: true
+        }
+      });
+
+      return interaction.editReply(`Queued **${safeTrackTitle(track)}** in **${voiceChannel.name}**.`);
+    } catch (error) {
+      console.error("Music /play error:", error);
+      return interaction.editReply(
+        `Could not play that audio: ${String(error?.message || error).slice(0, 1600)}`
+      );
+    }
+  }
+
+  if (interaction.commandName === "pause") {
+    try {
+      const queue = getGuildQueue(interaction);
+      if (!queue?.currentTrack) {
+        return interaction.reply({ content: "Nothing is currently playing.", ephemeral: true });
+      }
+      queue.node.setPaused(true);
+      return interaction.reply(`Paused **${safeTrackTitle(queue.currentTrack)}**.`);
+    } catch (error) {
+      return interaction.reply({ content: `Music player unavailable: ${error.message}`, ephemeral: true });
+    }
+  }
+
+  if (interaction.commandName === "resume") {
+    try {
+      const queue = getGuildQueue(interaction);
+      if (!queue?.currentTrack) {
+        return interaction.reply({ content: "Nothing is currently playing.", ephemeral: true });
+      }
+      queue.node.setPaused(false);
+      return interaction.reply(`Resumed **${safeTrackTitle(queue.currentTrack)}**.`);
+    } catch (error) {
+      return interaction.reply({ content: `Music player unavailable: ${error.message}`, ephemeral: true });
+    }
+  }
+
+  if (interaction.commandName === "skip") {
+    try {
+      const queue = getGuildQueue(interaction);
+      if (!queue?.currentTrack) {
+        return interaction.reply({ content: "Nothing is currently playing.", ephemeral: true });
+      }
+      const skipped = safeTrackTitle(queue.currentTrack);
+      queue.node.skip();
+      return interaction.reply(`Skipped **${skipped}**.`);
+    } catch (error) {
+      return interaction.reply({ content: `Music player unavailable: ${error.message}`, ephemeral: true });
+    }
+  }
+
+  if (interaction.commandName === "stop") {
+    try {
+      const queue = getGuildQueue(interaction);
+      if (!queue) {
+        return interaction.reply({ content: "There is no active music session.", ephemeral: true });
+      }
+      queue.clear();
+      queue.node.stop(true);
+      return interaction.reply("Stopped playback and cleared the AAOC music queue.");
+    } catch (error) {
+      return interaction.reply({ content: `Music player unavailable: ${error.message}`, ephemeral: true });
+    }
+  }
+
+  if (interaction.commandName === "queue") {
+    try {
+      const queue = getGuildQueue(interaction);
+      if (!queue?.currentTrack) {
+        return interaction.reply({ content: "The AAOC music queue is empty.", ephemeral: true });
+      }
+
+      const upcoming = queue.tracks.toArray().slice(0, 10);
+      const lines = [
+        `**Now:** ${safeTrackTitle(queue.currentTrack)}`,
+        ...upcoming.map((track, index) => `${index + 1}. ${safeTrackTitle(track)}`)
+      ];
+
+      if (queue.tracks.size > upcoming.length) {
+        lines.push(`…and ${queue.tracks.size - upcoming.length} more.`);
+      }
+
+      const embed = new EmbedBuilder()
+        .setTitle("AAOC Music Queue")
+        .setDescription(lines.join("\n"))
+        .setFooter({ text: `${queue.tracks.size + 1} track${queue.tracks.size === 0 ? "" : "s"} including current` });
+
+      return interaction.reply({ embeds: [embed] });
+    } catch (error) {
+      return interaction.reply({ content: `Music player unavailable: ${error.message}`, ephemeral: true });
+    }
+  }
+
+  if (interaction.commandName === "leave") {
+    try {
+      const queue = getGuildQueue(interaction);
+      if (!queue) {
+        return interaction.reply({ content: "I am not connected to an AAOC music session.", ephemeral: true });
+      }
+      queue.delete();
+      return interaction.reply("Disconnected from voice and cleared the music session.");
+    } catch (error) {
+      return interaction.reply({ content: `Music player unavailable: ${error.message}`, ephemeral: true });
     }
   }
 
