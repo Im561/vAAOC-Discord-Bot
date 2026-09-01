@@ -1,6 +1,7 @@
 import ffmpegPath from "ffmpeg-static";
 import { Player } from "discord-player";
 import { DefaultExtractors } from "@discord-player/extractor";
+import { YoutubeiExtractor } from "discord-player-youtubei";
 
 let player = null;
 let initialized = false;
@@ -13,6 +14,13 @@ export async function initializeMusic(client) {
   }
 
   player = new Player(client);
+
+  // Register YouTube before the default extractors so YouTube links/searches
+  // are claimed by the YouTube-specific extractor first.
+  await player.extractors.register(YoutubeiExtractor, {
+    overrideBridgeMode: "yt",
+    generateWithPoToken: true
+  });
   await player.extractors.loadMulti(DefaultExtractors);
 
   player.events.on("playerError", (queue, error) => {
@@ -28,7 +36,7 @@ export async function initializeMusic(client) {
   });
 
   initialized = true;
-  console.log("AAOC music player initialized (SoundCloud, raw audio URLs, attachments, Vimeo, Spotify/Apple Music metadata bridging where available). ");
+  console.log("AAOC music player initialized (YouTube, SoundCloud, direct audio, attachments, Vimeo, Spotify/Apple Music metadata bridging where available). ");
   return player;
 }
 
