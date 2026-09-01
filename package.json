@@ -1,6 +1,6 @@
 {
   "name": "aaoc-discord-bot",
-  "version": "1.2.3",
+  "version": "1.2.4",
   "description": "Atlantic Air Operations Command Discord operations, fleet, training, and music bot",
   "main": "src/index.js",
   "type": "module",
@@ -10,16 +10,15 @@
     "check": "node --check src/index.js && node --check src/music.js && node --check src/commands.js && node --check src/phpvms.js"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=22.0.0 <23"
   },
   "dependencies": {
-    "@discord-player/extractor": "^7.2.0",
-    "@snazzah/davey": "^0.1.12",
-    "discord-player": "^7.2.0",
-    "discord-player-youtubedlp": "^0.8.7",
-    "discord.js": "^14.19.3",
-    "dotenv": "^16.5.0",
-    "express": "^5.1.0",
+    "@discord-player/extractor": "7.2.0",
+    "discord-player": "7.2.0",
+    "discord-player-youtubedlp": "1.2.1",
+    "discord.js": "14.19.3",
+    "dotenv": "16.5.0",
+    "express": "5.1.0",
     "ffmpeg-static": "5.3.0"
   }
 }
