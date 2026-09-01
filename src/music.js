@@ -1,7 +1,6 @@
 import ffmpegPath from "ffmpeg-static";
 import { Player } from "discord-player";
 import { DefaultExtractors } from "@discord-player/extractor";
-import { YouTubeDlpExtractor } from "discord-player-youtubedlp";
 
 let player = null;
 let initialized = false;
@@ -14,9 +13,7 @@ export async function initializeMusic(client) {
   }
 
   player = new Player(client);
-
   await player.extractors.loadMulti(DefaultExtractors);
-  await player.extractors.register(YouTubeDlpExtractor, {});
 
   player.events.on("playerError", (queue, error) => {
     console.error(`Music player error in guild ${queue?.guild?.id || "unknown"}:`, error);
@@ -31,7 +28,7 @@ export async function initializeMusic(client) {
   });
 
   initialized = true;
-  console.log("AAOC music player initialized (Discord Player + YouTube/SoundCloud/raw audio support).");
+  console.log("AAOC music player initialized (SoundCloud, raw audio URLs, attachments, Vimeo, Spotify/Apple Music metadata bridging where available). ");
   return player;
 }
 
