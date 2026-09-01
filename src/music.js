@@ -1,4 +1,5 @@
 import { spawn, execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import {
   AudioPlayerStatus,
   NoSubscriberBehavior,
@@ -17,8 +18,33 @@ let runtimeStatus = {
   youtubeReady: false,
   youtubeError: null,
   ffmpegVersion: null,
-  ytdlpVersion: null
+  ytdlpVersion: null,
+  poTokenProvider: false
 };
+
+const POT_SCRIPT = process.env.YTDLP_POT_SCRIPT || "/opt/bgutil/server/build/generate_once.js";
+const YTDLP_COMMAND = "python3";
+const YTDLP_PREFIX = ["-m", "yt_dlp"];
+
+function youtubeRuntimeArgs() {
+  const args = [
+    "--js-runtimes", "node",
+    "--extractor-args", "youtube:player_client=mweb"
+  ];
+
+  if (existsSync(POT_SCRIPT)) {
+    args.push(
+      "--extractor-args",
+      `youtubepot-bgutilscript:script_path=${POT_SCRIPT}`
+    );
+  }
+
+  return args;
+}
+
+function ytdlpArgs(extra = []) {
+  return [...YTDLP_PREFIX, ...youtubeRuntimeArgs(), ...extra];
+}
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -28,7 +54,7 @@ function commandOutput(command, args = []) {
   return execFileSync(command, args, {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
-    timeout: 10000
+    timeout: 15000
   }).trim();
 }
 
@@ -72,7 +98,7 @@ function runCapture(command, args, timeoutMs = 20000) {
       settled = true;
       clearTimeout(timer);
       if (code === 0) return resolve({ stdout, stderr });
-      reject(new Error(`${command} exited with code ${code}: ${stderr.trim().slice(-1500) || "no error output"}`));
+      reject(new Error(`yt-dlp exited with code ${code}: ${stderr.trim().slice(-1800) || "no error output"}`));
     });
   });
 }
@@ -86,20 +112,28 @@ function normalizeTarget(query) {
 
 async function resolveTrack(query, requestedBy) {
   const target = normalizeTarget(query);
-  const { stdout } = await runCapture("yt-dlp", [
-    "--dump-single-json",
-    "--skip-download",
-    "--no-playlist",
-    "--no-warnings",
-    "--socket-timeout", "12",
-    target
-  ], 25000);
+  const { stdout } = await runCapture(
+    YTDLP_COMMAND,
+    ytdlpArgs([
+      "--dump-single-json",
+      "--skip-download",
+      "--no-playlist",
+      "--no-warnings",
+      "--socket-timeout", "12",
+      target
+    ]),
+    35000
+  );
 
   let data;
   try {
     data = JSON.parse(stdout);
   } catch {
     throw new Error("yt-dlp returned invalid track metadata.");
+  }
+
+  if (Array.isArray(data.entries) && data.entries.length) {
+    data = data.entries.find(Boolean) || data;
   }
 
   const webpageUrl = String(data.webpage_url || data.original_url || data.url || "").trim();
@@ -136,8 +170,6 @@ async function createSession(guild, voiceChannel) {
   });
 
   await entersState(connection, VoiceConnectionStatus.Ready, 20000);
-
-  // Let the initial Discord DAVE/MLS key transition finish before audio starts.
   await sleep(1800);
 
   const audioPlayer = createAudioPlayer({
@@ -214,17 +246,23 @@ async function startNext(session) {
   session.current = next;
 
   try {
-    const child = spawn("yt-dlp", [
-      "--no-playlist",
-      "--no-warnings",
-      "--socket-timeout", "12",
-      "-f", "bestaudio/best",
-      "-o", "-",
-      next.url
-    ], {
-      stdio: ["ignore", "pipe", "pipe"],
-      windowsHide: true
-    });
+    const child = spawn(
+      YTDLP_COMMAND,
+      ytdlpArgs([
+        "--no-playlist",
+        "--no-warnings",
+        "--socket-timeout", "12",
+        "--retries", "3",
+        "--fragment-retries", "3",
+        "-f", "bestaudio/best",
+        "-o", "-",
+        next.url
+      ]),
+      {
+        stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true
+      }
+    );
 
     session.process = child;
     let stderr = "";
@@ -240,7 +278,7 @@ async function startNext(session) {
 
     child.once("close", code => {
       if (code && code !== 0 && session.current === next) {
-        console.error(`yt-dlp stream exited (${session.guildId}) code ${code}: ${stderr.slice(-1500)}`);
+        console.error(`yt-dlp stream exited (${session.guildId}) code ${code}: ${stderr.slice(-1800)}`);
       }
     });
 
@@ -251,7 +289,7 @@ async function startNext(session) {
     });
 
     session.audioPlayer.play(resource);
-    await entersState(session.audioPlayer, AudioPlayerStatus.Playing, 25000);
+    await entersState(session.audioPlayer, AudioPlayerStatus.Playing, 30000);
   } catch (error) {
     console.error(`Failed to start AAOC track (${session.guildId}):`, error);
     cleanupProcess(session);
@@ -268,17 +306,25 @@ export async function initializeMusic(client) {
   discordClient = client;
 
   try {
-    const ytdlpVersion = commandOutput("yt-dlp", ["--version"]);
+    const ytdlpVersion = commandOutput(YTDLP_COMMAND, [...YTDLP_PREFIX, "--version"]);
     const ffmpegLine = commandOutput("ffmpeg", ["-version"]).split(/\r?\n/)[0] || "ffmpeg available";
+    const poTokenProvider = existsSync(POT_SCRIPT);
+
+    if (!poTokenProvider) {
+      console.warn(`WARNING: YouTube PO-token provider script not found at ${POT_SCRIPT}`);
+    }
+
     runtimeStatus = {
       initialized: true,
       youtubeReady: true,
       youtubeError: null,
       ffmpegVersion: ffmpegLine,
-      ytdlpVersion
+      ytdlpVersion,
+      poTokenProvider
     };
-    console.log(`SUCCESS: yt-dlp ${ytdlpVersion} available.`);
+    console.log(`SUCCESS: yt-dlp ${ytdlpVersion} available through python3 -m yt_dlp.`);
     console.log(`SUCCESS: ${ffmpegLine}`);
+    console.log(`YouTube PO-token provider: ${poTokenProvider ? "ready" : "missing"}`);
     console.log("SUCCESS: AAOC direct Discord voice music system ready.");
   } catch (error) {
     runtimeStatus = {
@@ -286,7 +332,8 @@ export async function initializeMusic(client) {
       youtubeReady: false,
       youtubeError: error?.message || String(error),
       ffmpegVersion: null,
-      ytdlpVersion: null
+      ytdlpVersion: null,
+      poTokenProvider: false
     };
     throw error;
   }
