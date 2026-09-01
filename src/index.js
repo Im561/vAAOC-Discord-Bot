@@ -8,6 +8,7 @@ import {
   EmbedBuilder
 } from "discord.js";
 import { commandData, handleCommand } from "./commands.js";
+import { initializeMusic } from "./music.js";
 
 function env(name) {
   return String(process.env[name] || "").trim();
@@ -27,15 +28,18 @@ if (missing.length) {
 }
 
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds]
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildVoiceStates
+  ]
 });
 
 let commandRegistrationOk = false;
 let commandRegistrationError = null;
+let musicReady = false;
+let musicError = null;
 
 async function registerCommands() {
-  // Use the application ID from the authenticated bot itself. This prevents
-  // commands from being accidentally registered against the wrong Discord app.
   const applicationId = client.application?.id || client.user?.id;
   if (!applicationId) throw new Error("Could not determine Discord application ID.");
 
@@ -61,7 +65,7 @@ async function registerCommands() {
   commandRegistrationOk = true;
   commandRegistrationError = null;
   console.log(`SUCCESS: Registered ${Array.isArray(registered) ? registered.length : commandData.length} AAOC slash commands in ${guild.name}.`);
-  console.log("Commands: /ping /aaoc /links /training /callsign /airport /aircraft /flightnotify");
+  console.log("Commands include fleet lookups plus /play /pause /resume /skip /stop /queue /leave");
 }
 
 client.once("ready", async () => {
@@ -72,7 +76,18 @@ client.once("ready", async () => {
   console.log(`Guilds visible to bot: ${client.guilds.cache.size}`);
   console.log("============================================================");
 
-  client.user.setActivity("AAOC Fleet Operations");
+  client.user.setActivity("AAOC Fleet & Music");
+
+  try {
+    await initializeMusic(client);
+    musicReady = true;
+    musicError = null;
+    console.log("SUCCESS: AAOC voice/music system ready.");
+  } catch (error) {
+    musicReady = false;
+    musicError = error?.message || String(error);
+    console.error("FAILED TO INITIALIZE MUSIC PLAYER:", error);
+  }
 
   try {
     await registerCommands();
@@ -108,8 +123,6 @@ client.on("error", error => {
   console.error("Discord client error:", error);
 });
 
-// Start Railway's HTTP listener immediately so deployment diagnostics remain
-// reachable while Discord is connecting.
 const app = express();
 app.use(express.json({ limit: "1mb" }));
 
@@ -125,6 +138,8 @@ app.get("/health", (_req, res) => {
     discordReady,
     commandsRegistered: commandRegistrationOk,
     commandRegistrationError,
+    musicReady,
+    musicError,
     botUser: client.user?.tag || null,
     botApplicationId: client.application?.id || client.user?.id || null,
     targetGuildId: DISCORD_GUILD_ID,
