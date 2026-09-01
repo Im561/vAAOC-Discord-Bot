@@ -1,11 +1,11 @@
 {
   "name": "aaoc-discord-bot",
-  "version": "1.2.2",
+  "version": "1.2.3",
   "description": "Atlantic Air Operations Command Discord operations, fleet, training, and music bot",
   "main": "src/index.js",
   "type": "module",
   "scripts": {
-    "start": "node src/index.js",
+    "start": "npm run check && node src/index.js",
     "dev": "node --watch src/index.js",
     "check": "node --check src/index.js && node --check src/music.js && node --check src/commands.js && node --check src/phpvms.js"
   },
