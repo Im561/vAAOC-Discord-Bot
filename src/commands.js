@@ -3,20 +3,55 @@ import {
   EmbedBuilder
 } from "discord.js";
 import { links, callsigns } from "./config.js";
-import fs from "node:fs";
-
-const fleetPath = new URL("../data/fleet.json", import.meta.url);
-
-function loadFleet() {
-  return JSON.parse(fs.readFileSync(fleetPath, "utf8"));
-}
+import { getFleet, getAirport, matchesAircraftType } from "./phpvms.js";
 
 function normalize(value) {
   return String(value || "").trim().toUpperCase();
 }
 
-function aircraftLabel(a) {
-  return `${a.tail} — ${a.type}`;
+function statusLabel(item) {
+  return item.active ? "Active" : "Inactive";
+}
+
+function chunkLines(lines, maxChars = 3600) {
+  const chunks = [];
+  let current = "";
+
+  for (const line of lines) {
+    const next = current ? `${current}\n${line}` : line;
+    if (next.length > maxChars && current) {
+      chunks.push(current);
+      current = line;
+    } else {
+      current = next;
+    }
+  }
+
+  if (current) chunks.push(current);
+  return chunks;
+}
+
+function buildFleetEmbeds(title, lines, footer, description = null) {
+  const chunks = chunkLines(lines);
+  return chunks.slice(0, 10).map((chunk, index) => {
+    const embed = new EmbedBuilder()
+      .setTitle(chunks.length > 1 ? `${title} (${index + 1}/${Math.min(chunks.length, 10)})` : title)
+      .setDescription(`${description && index === 0 ? `${description}\n\n` : ""}${chunk}`)
+      .setFooter({ text: footer })
+      .setTimestamp();
+    return embed;
+  });
+}
+
+async function replyApiError(interaction, error) {
+  console.error("AAOC phpVMS fleet lookup failed:", error);
+  const message = String(error?.message || error || "Unknown phpVMS error");
+  const content = `AAOC fleet lookup failed: ${message}`.slice(0, 1900);
+
+  if (interaction.deferred || interaction.replied) {
+    return interaction.editReply({ content, embeds: [] });
+  }
+  return interaction.reply({ content, ephemeral: true });
 }
 
 export const commandData = [
@@ -54,7 +89,7 @@ export const commandData = [
 
   new SlashCommandBuilder()
     .setName("airport")
-    .setDescription("List AAOC airframes at an airport/base.")
+    .setDescription("List AAOC airframes currently at an airport/base.")
     .addStringOption(option =>
       option
         .setName("icao")
@@ -64,7 +99,7 @@ export const commandData = [
 
   new SlashCommandBuilder()
     .setName("aircraft")
-    .setDescription("List all AAOC aircraft of a type and where they are.")
+    .setDescription("List all AAOC aircraft of a type and their current locations.")
     .addStringOption(option =>
       option
         .setName("type")
@@ -141,62 +176,69 @@ export async function handleCommand(interaction) {
 
   if (interaction.commandName === "airport") {
     const icao = normalize(interaction.options.getString("icao", true));
-    const fleet = loadFleet();
+    await interaction.deferReply();
 
-    const matches = fleet.filter(a =>
-      normalize(a.current_location) === icao || normalize(a.home_base) === icao
-    );
+    try {
+      const [snapshot, airport] = await Promise.all([
+        getFleet(),
+        getAirport(icao).catch(() => null)
+      ]);
 
-    if (!matches.length) {
-      return interaction.reply({
-        content: `No AAOC airframes found at **${icao}**.`,
-        ephemeral: true
-      });
+      const matches = snapshot.aircraft.filter(item => item.airportId === icao);
+      const airportName = airport?.name ? ` — ${airport.name}` : "";
+
+      if (!matches.length) {
+        return interaction.editReply({
+          content: `No AAOC airframes are currently listed at **${icao}${airportName}** in phpVMS.`
+        });
+      }
+
+      const lines = matches.map(item =>
+        `**${item.displayType}** — \`${item.displayTail}\` • ${statusLabel(item)}`
+      );
+
+      const embeds = buildFleetEmbeds(
+        `AAOC Airframes — ${icao}`,
+        lines,
+        `${matches.length} airframe${matches.length === 1 ? "" : "s"} • Live phpVMS fleet`,
+        airport?.name || null
+      );
+
+      return interaction.editReply({ embeds, content: "" });
+    } catch (error) {
+      return replyApiError(interaction, error);
     }
-
-    const lines = matches.map(a =>
-      `**${aircraftLabel(a)}**\n` +
-      `Status: ${a.status} | Home: ${a.home_base} | Current: ${a.current_location}`
-    );
-
-    const embed = new EmbedBuilder()
-      .setTitle(`AAOC Airframes — ${icao}`)
-      .setDescription(lines.join("\n\n").slice(0, 4000))
-      .setFooter({ text: `${matches.length} airframe${matches.length === 1 ? "" : "s"} found` })
-      .setTimestamp();
-
-    return interaction.reply({ embeds: [embed] });
   }
 
   if (interaction.commandName === "aircraft") {
-    const requested = normalize(interaction.options.getString("type", true));
-    const fleet = loadFleet();
+    const requested = interaction.options.getString("type", true);
+    await interaction.deferReply();
 
-    const matches = fleet.filter(a =>
-      normalize(a.type) === requested ||
-      normalize(a.type).includes(requested) ||
-      requested.includes(normalize(a.type))
-    );
+    try {
+      const snapshot = await getFleet();
+      const matches = snapshot.aircraft.filter(item => matchesAircraftType(item, requested));
 
-    if (!matches.length) {
-      return interaction.reply({
-        content: `No AAOC aircraft found matching **${requested}**.`,
-        ephemeral: true
+      if (!matches.length) {
+        return interaction.editReply({
+          content: `No AAOC aircraft in phpVMS match **${requested}**.`
+        });
+      }
+
+      const lines = matches.map(item => {
+        const location = item.airportId || "UNKNOWN";
+        return `**${location}** — \`${item.displayTail}\` • ${item.displayType} • ${statusLabel(item)}`;
       });
+
+      const embeds = buildFleetEmbeds(
+        `AAOC Fleet — ${requested.toUpperCase()}`,
+        lines,
+        `${matches.length} airframe${matches.length === 1 ? "" : "s"} • Live phpVMS fleet`
+      );
+
+      return interaction.editReply({ embeds, content: "" });
+    } catch (error) {
+      return replyApiError(interaction, error);
     }
-
-    const lines = matches.map(a =>
-      `**${a.tail}** — ${a.type}\n` +
-      `Current: ${a.current_location} | Home: ${a.home_base} | Status: ${a.status}`
-    );
-
-    const embed = new EmbedBuilder()
-      .setTitle(`AAOC Fleet — ${requested}`)
-      .setDescription(lines.join("\n\n").slice(0, 4000))
-      .setFooter({ text: `${matches.length} airframe${matches.length === 1 ? "" : "s"} found` })
-      .setTimestamp();
-
-    return interaction.reply({ embeds: [embed] });
   }
 
   if (interaction.commandName === "flightnotify") {
