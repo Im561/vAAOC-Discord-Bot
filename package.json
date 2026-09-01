@@ -1,6 +1,6 @@
 {
   "name": "aaoc-discord-bot",
-  "version": "1.2.4",
+  "version": "1.2.5",
   "description": "Atlantic Air Operations Command Discord operations, fleet, training, and music bot",
   "main": "src/index.js",
   "type": "module",
@@ -18,7 +18,6 @@
     "discord-player-youtubedlp": "1.2.1",
     "discord.js": "14.19.3",
     "dotenv": "16.5.0",
-    "express": "5.1.0",
-    "ffmpeg-static": "5.3.0"
+    "express": "5.1.0"
   }
 }
