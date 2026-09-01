@@ -28,38 +28,44 @@ export async function initializeMusic(client) {
 
     const nextPlayer = new Player(client);
 
-    // Load the stable/default sources first. This guarantees the whole bot can
-    // still start even if YouTube changes and its community extractor breaks.
     await withTimeout(
       nextPlayer.extractors.loadMulti(DefaultExtractors),
       15000,
       "Default music extractor initialization"
     );
 
-    // YouTube is intentionally loaded dynamically so an incompatible package
-    // cannot crash the Discord bot at module-import/startup time.
+    // Load YouTube dynamically so a broken third-party extractor can never
+    // crash the whole Discord bot before it logs in or answers commands.
     try {
-      const { YoutubeiExtractor } = await withTimeout(
-        import("discord-player-youtubei"),
+      const { YouTubeDlpExtractor } = await withTimeout(
+        import("discord-player-youtubedlp"),
         15000,
-        "YouTube extractor import"
+        "YouTube yt-dlp extractor import"
       );
 
-      if (!YoutubeiExtractor) {
-        throw new Error("discord-player-youtubei did not export YoutubeiExtractor.");
+      if (!YouTubeDlpExtractor) {
+        throw new Error("discord-player-youtubedlp did not export YouTubeDlpExtractor.");
       }
 
       await withTimeout(
-        nextPlayer.extractors.register(YoutubeiExtractor, {
-          overrideBridgeMode: "yt"
+        nextPlayer.extractors.register(YouTubeDlpExtractor, {
+          searchLimit: 3,
+          relatedLimit: 5,
+          enableProtocols: true,
+          searchTimeoutMs: 6000,
+          videoTimeoutMs: 7000,
+          playlistTimeoutMs: 25000,
+          ytdlpTimeoutMs: 25000,
+          infoCacheTtlMs: 120000,
+          debug: process.env.DP_DEBUG === "1"
         }),
         15000,
-        "YouTube extractor registration"
+        "YouTube yt-dlp extractor registration"
       );
 
       youtubeReady = true;
       youtubeError = null;
-      console.log("SUCCESS: AAOC YouTube extractor ready.");
+      console.log("SUCCESS: AAOC YouTube yt-dlp extractor ready.");
     } catch (error) {
       youtubeReady = false;
       youtubeError = error?.message || String(error);
