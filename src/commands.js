@@ -65,16 +65,6 @@ function getGuildQueue(interaction) {
   return getMusicPlayer().nodes.get(interaction.guildId);
 }
 
-function isYouTubeUrl(value) {
-  try {
-    const url = new URL(value);
-    const host = url.hostname.toLowerCase().replace(/^www\./, "");
-    return host === "youtube.com" || host.endsWith(".youtube.com") || host === "youtu.be";
-  } catch {
-    return false;
-  }
-}
-
 function safeTrackTitle(track) {
   return String(track?.title || track?.raw?.title || "Unknown track").slice(0, 180);
 }
@@ -138,7 +128,7 @@ export const commandData = [
     .addStringOption(option =>
       option
         .setName("query")
-        .setDescription("Song search, SoundCloud link, or direct audio URL")
+        .setDescription("YouTube/SoundCloud URL, direct audio URL, or song search")
         .setRequired(true)
     ),
 
@@ -323,13 +313,6 @@ export async function handleCommand(interaction) {
     }
 
     const query = interaction.options.getString("query", true).trim();
-    if (isYouTubeUrl(query)) {
-      return interaction.reply({
-        content: "YouTube audio playback is not enabled. Use a SoundCloud link/search or a direct audio URL instead.",
-        ephemeral: true
-      });
-    }
-
     await interaction.deferReply();
 
     try {
@@ -342,16 +325,13 @@ export async function handleCommand(interaction) {
         );
       }
 
-      const isUrl = /^https?:\/\//i.test(query);
-      const playableQuery = isUrl ? query : `scsearch:${query}`;
-
-      const { track } = await player.play(voiceChannel, playableQuery, {
+      const { track } = await player.play(voiceChannel, query, {
         nodeOptions: {
           metadata: {
             textChannelId: interaction.channelId,
             requestedBy: interaction.user.id
           },
-          bufferingTimeout: 15000,
+          bufferingTimeout: 20000,
           leaveOnStop: true,
           leaveOnStopCooldown: 10000,
           leaveOnEnd: true,
